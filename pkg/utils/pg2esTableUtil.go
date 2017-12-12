@@ -1,0 +1,25 @@
+package utils
+
+var PgEsTableMapping = map[string]string{
+	"orderregular":  "orderRegular",
+	"fbstore":       "fbStore",
+	"storeapp":      "storeApp",
+	"orderlog":      "orderLog",
+	"appcategory":   "appCategory",
+	"storeshipment": "storeShipment",
+	"iolog":         "ioLog",
+	"cronjob":       "cronJob",
+	"orders":        "order",
+	"membergroup":   "memberGroup",
+	"exportformat":  "exportFormat",
+	"userpoints":    "userPoints",
+	"orderapply":    "orderApply",
+	"users":         "user",
+	"orderproduct":  "orderProduct",
+	"wishlist":      "wishList",
+	"webtrack":      "webTrack",
+	"applogin":      "appLogin",
+	"ordercache":    "orderCache",
+	"initversion":   "initVersion",
+	"storepayment":  "storePayment",
+}
