@@ -7,6 +7,10 @@
 一但執行過程有任何一筆錯誤 程式將會中斷 此時PG、ES可能會不同步
 可選擇排除問題重新執行 或進行Recover
 
+**還原時由於ES限制 會將version設為還原當下的UnixNano**
+
+**因此若是要重做migration 要注意資料的updatedAt時間**
+
 ## Recover
 每次執行migration時
 會依照執行時間在/backup 產生備份檔案
@@ -20,22 +24,22 @@ ex: 20060102150405
     * output: 印出查詢query 條件不拘 但必須要查出id、data
     ex: SELECT id, data FROM ... WHERE ...
 * -migration
-    * input: 吃兩個參數 依序為 id、data
+    * input: data //json string
     * output:
 ```
 [
     {
         "table": "store", // POSTGRES Table name
         "action": "UPSERT", // UPSERT or DELETE
-        "id": "000E5620-9A0D-44D1-B155-0E9ED6F589A2", // 資料ID 大寫
-        "parent": "", // Parent ID 小寫，若無請給空字串
+        "id": "000e5620-9a0d-44d1-b155-0e9ed6f589a2", // 資料ID
+        "parent": "", // Parent ID 若無請給空字串
         "updatedAt": "1986-01-01T00:00:00.002Z",
         "data": "{\"id\": \"000e5620-9a0d-44d1-b155-0e9ed6f589a2\", \"storeStatus\": 1}"
     },
     {
         "table": "product",
         "action": "DELETE",
-        "id": "000E5620-9A0D-44D1-B155-0E9ED6F589A2",
+        "id": "000e5620-9a0d-44d1-b155-0e9ed6f589a2",
         "parent": "",
         "updatedAt": "",
         "data": ""

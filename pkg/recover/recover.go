@@ -18,9 +18,10 @@ import (
 )
 
 type Recover struct {
-	db         *sql.DB
-	es         *elastic.Client
-	backupTime string
+	db          *sql.DB
+	es          *elastic.Client
+	backupTime  string
+	curTimeNano int64
 }
 
 type DeleteIDs struct {
@@ -29,11 +30,10 @@ type DeleteIDs struct {
 }
 
 type BackupOrigin struct {
-	Table     string
-	Id        string
-	Parent    string
-	UpdatedAt string
-	Data      string
+	Table  string
+	Id     string
+	Parent string
+	Data   string
 }
 
 func NewRecover(backup string) Recover {
@@ -48,7 +48,7 @@ func NewRecover(backup string) Recover {
 		os.Exit(1)
 	}
 
-	return Recover{pg, es, backup}
+	return Recover{pg, es, backup, time.Now().UnixNano()}
 }
 
 func (r *Recover) ProcRecover() error {
@@ -101,11 +101,10 @@ func (r *Recover) ProcRecover() error {
 
 		o := strings.Split(oScanner.Text(), "!@#")
 		originDatas[o[0]] = append(originDatas[o[0]], BackupOrigin{
-			Table:     o[0],
-			Id:        o[1],
-			Parent:    o[2],
-			UpdatedAt: o[3],
-			Data:      o[4],
+			Table:  o[0],
+			Id:     o[1],
+			Parent: o[2],
+			Data:   o[3],
 		})
 
 		if count == 100 {
@@ -141,15 +140,8 @@ func (r *Recover) doInsert(originDatas map[string][]BackupOrigin) error {
 		bulk := r.es.Bulk().Index(os.Getenv("ELASTIC_DB")).Type(esTable)
 
 		for _, oData := range oDatas {
-
-			updateAt, err := time.Parse(time.RFC3339, oData.UpdatedAt)
-			if err != nil {
-				log.Printf("convert time err: %+v", err)
-				return err
-			}
-
 			values = append(values, fmt.Sprintf("('%s', '%s')", oData.Id, oData.Data))
-			bulk.Add(elastic.NewBulkIndexRequest().Id(strings.ToLower(oData.Id)).VersionType("external").Version(updateAt.UnixNano()).Parent(oData.Parent).Doc(oData.Data))
+			bulk.Add(elastic.NewBulkIndexRequest().Id(oData.Id).VersionType("external").Version(r.curTimeNano).Parent(oData.Parent).Doc(oData.Data))
 		}
 
 		// PG Insert
@@ -169,7 +161,7 @@ func (r *Recover) doInsert(originDatas map[string][]BackupOrigin) error {
 		if res.Errors {
 			for _, item := range res.Failed() {
 				if item.Error.Type == "version_conflict_engine_exception" {
-					continue
+					// continue
 				}
 				log.Printf("type: %s, Id: %s", item.Type, item.Id)
 				log.Printf("reason type: %s, reason: %s", item.Error.Type, item.Error.Reason)
@@ -204,7 +196,7 @@ func (r *Recover) doDelete(allDeleteIDs [][]string) error {
 		}
 
 		for _, id := range idArr {
-			bulk.Add(elastic.NewBulkDeleteRequest().Id(strings.ToLower(id)))
+			bulk.Add(elastic.NewBulkDeleteRequest().Id(id))
 		}
 
 		// ES 批次執行

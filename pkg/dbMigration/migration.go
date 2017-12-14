@@ -37,10 +37,9 @@ type MigrationData struct {
 }
 
 type OriginData struct {
-	Id        string
-	Data      string
-	Parent    string
-	UpdatedAt string
+	Id     string
+	Data   string
+	Parent string
 }
 
 func NewMigration(plugin string, execTime string) Migration {
@@ -124,7 +123,6 @@ func (m *Migration) ProcDbBigration() {
 
 func (m *Migration) getQuery() string {
 
-	// stdout, err := exec.Command("go", "run", "qTest.go").Output()
 	stdout, err := exec.Command(m.plugin, "-query").Output()
 	if err != nil {
 		log.Fatal(err)
@@ -142,8 +140,7 @@ func (m *Migration) getQuery() string {
 
 func (m *Migration) getMigrationResult(id string, originData string) ([]MigrationData, error) {
 
-	// stdout, err := exec.Command("go", "run", "mTest.go").Output()
-	stdout, err := exec.Command(m.plugin, "-migration", id, originData).Output()
+	stdout, err := exec.Command(m.plugin, "-migration", strings.Replace(originData, `"`, `\"`, -1)).Output()
 	if err != nil {
 		log.Printf("Exec migration error ID: %s. %q\n", id, err)
 		return []MigrationData{}, err
@@ -194,7 +191,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 			changeIds = append(changeIds, mData.Id)
 
 			if mData.Action == "DELETE" {
-				bulk.Add(elastic.NewBulkDeleteRequest().Id(strings.ToLower(mData.Id)))
+				bulk.Add(elastic.NewBulkDeleteRequest().Id(mData.Id))
 			} else if mData.Action == "UPSERT" {
 				updateAt, err := time.Parse(time.RFC3339, mData.UpdatedAt)
 				if err != nil {
@@ -203,14 +200,12 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 				}
 
 				values = append(values, fmt.Sprintf("('%s', '%s')", mData.Id, mData.Data))
-				bulk.Add(elastic.NewBulkIndexRequest().Id(strings.ToLower(mData.Id)).VersionType("external").Version(updateAt.UnixNano()).Parent(mData.Parent).Doc(mData.Data))
+				bulk.Add(elastic.NewBulkIndexRequest().Id(mData.Id).VersionType("external").Version(updateAt.UnixNano()).Parent(mData.Parent).Doc(mData.Data))
 			}
 		}
 
 		// 備份所有有變動的資料
-		oQuery := `SELECT id,
-			CASE WHEN data->>'__parent' IS NOT NULL THEN data->>'__parent' ELSE '' END,
-			data->>'updatedAt', data FROM %s WHERE id IN ('%s')`
+		oQuery := `SELECT id, CASE WHEN data->>'__parent' IS NOT NULL THEN data->>'__parent' ELSE '' END, data FROM %s WHERE id IN ('%s')`
 		rows, err := m.db.Query(fmt.Sprintf(oQuery, table, strings.Join(changeIds, "','")))
 		if err != nil {
 			log.Printf("PG error: %+v", err)
@@ -218,14 +213,14 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 		}
 
 		for rows.Next() {
-			var id, parent, updatedAt, data string
-			err = rows.Scan(&id, &parent, &updatedAt, &data)
+			var id, parent, data string
+			err = rows.Scan(&id, &parent, &data)
 			if err != nil {
 				log.Printf("Db Scan error Table: %s ID: %s DATA: %s\n", table, id, data)
 				return err
 			}
 
-			oDatas = append(oDatas, OriginData{Id: id, Parent: parent, UpdatedAt: updatedAt, Data: data})
+			oDatas = append(oDatas, OriginData{Id: id, Parent: parent, Data: data})
 		}
 
 		// 將原有資料寫入備份檔案
@@ -266,7 +261,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 		if res.Errors {
 			for _, item := range res.Failed() {
 				if item.Error.Type == "version_conflict_engine_exception" {
-					continue
+					// continue
 				}
 				log.Printf("type: %s, Id: %s", item.Type, item.Id)
 				log.Printf("reason type: %s, reason: %s", item.Error.Type, item.Error.Reason)
@@ -288,7 +283,7 @@ func (m *Migration) writeToBackupFile(table string, oDatas []OriginData, changeI
 
 	oWriter := bufio.NewWriter(m.oFile)
 	for _, oData := range oDatas {
-		oWriter.WriteString(table + "!@#" + strings.ToUpper(oData.Id) + "!@#" + oData.Parent + "!@#" + string(oData.UpdatedAt) + "!@#" + oData.Data + "\n")
+		oWriter.WriteString(table + "!@#" + oData.Id + "!@#" + oData.Parent + "!@#" + oData.Data + "\n")
 	}
 	err := oWriter.Flush()
 	if err != nil {
