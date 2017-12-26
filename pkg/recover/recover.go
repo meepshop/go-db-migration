@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -20,7 +21,8 @@ import (
 type Recover struct {
 	db          *sql.DB
 	es          *elastic.Client
-	backupTime  string
+	oFile       *os.File
+	uFile       *os.File
 	curTimeNano int64
 }
 
@@ -36,38 +38,44 @@ type BackupOrigin struct {
 	Data   string
 }
 
-func NewRecover(backup string) Recover {
+func NewRecover(backup string) (Recover, error) {
+
+	r := Recover{}
+	r.curTimeNano = time.Now().UnixNano()
 
 	pg, err := database.NewPGConn()
 	if err != nil {
-		os.Exit(1)
+		return Recover{}, err
 	}
+	r.db = pg
 
 	es, err := database.NewESConn()
 	if err != nil {
-		os.Exit(1)
+		return r, err
 	}
+	r.es = es
 
-	return Recover{pg, es, backup, time.Now().UnixNano()}
+	oFile, err := os.Open("backup/" + backup + "_originData")
+	if err != nil {
+		log.Printf("%+v", err)
+		return r, err
+	}
+	r.oFile = oFile
+
+	uFile, err := os.Open("backup/" + backup + "_upsertID")
+	if err != nil {
+		log.Printf("%+v", err)
+		return r, err
+	}
+	r.uFile = uFile
+
+	return r, nil
 }
 
 func (r *Recover) ProcRecover() error {
 
-	oFile, err := os.Open("backup/" + r.backupTime + "_originData")
-	if err != nil {
-		return err
-	}
-
-	uFile, err := os.Open("backup/" + r.backupTime + "_upsertID")
-	if err != nil {
-		return err
-	}
-
-	defer oFile.Close()
-	defer uFile.Close()
-
-	// 先讀取UpsertID 把所有變更過的資料刪除
-	uScanner := bufio.NewScanner(uFile)
+	// 先讀取upsertID 把所有變更過的資料刪除
+	uScanner := bufio.NewScanner(r.uFile)
 	uScanner.Split(bufio.ScanLines)
 
 	curTable := ""
@@ -85,21 +93,24 @@ func (r *Recover) ProcRecover() error {
 		}
 	}
 
-	err = r.doDelete(allDeleteIDs)
+	err := r.doDelete(allDeleteIDs)
 	if err != nil {
 		return err
 	}
 
 	// 再讀取originData 將原資料寫回
-	oScanner := bufio.NewScanner(oFile)
-	oScanner.Split(bufio.ScanLines)
-
 	originDatas := map[string][]BackupOrigin{}
-	count := 0
-	for oScanner.Scan() {
-		count += 1
+	oReader := bufio.NewReader(r.oFile)
+	for {
+		line, err := oReader.ReadString('\n')
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			log.Print(err)
+			return err
+		}
 
-		o := strings.Split(oScanner.Text(), "!@#")
+		o := strings.Split(line, "!@#")
 		originDatas[o[0]] = append(originDatas[o[0]], BackupOrigin{
 			Table:  o[0],
 			Id:     o[1],
@@ -107,21 +118,53 @@ func (r *Recover) ProcRecover() error {
 			Data:   o[3],
 		})
 
-		if count == 100 {
-			err = r.doInsert(originDatas)
-			if err != nil {
+		if len(originDatas) == 100 {
+			if err := r.doInsert(originDatas); err != nil {
 				return err
 			}
 
 			originDatas = map[string][]BackupOrigin{}
 		}
+
 	}
 
-	err = r.doInsert(originDatas)
-	if err != nil {
+	if err := r.doInsert(originDatas); err != nil {
 		return err
 	}
 
+	/*
+		// 用NewScanner有個天殺的坑 會讀不完全部 原因不明
+		oScanner := bufio.NewScanner(r.oFile)
+		oScanner.Split(bufio.ScanLines)
+
+		originDatas := map[string][]BackupOrigin{}
+		count := 0
+		for oScanner.Scan() {
+			count += 1
+
+			o := strings.Split(oScanner.Text(), "!@#")
+			originDatas[o[0]] = append(originDatas[o[0]], BackupOrigin{
+				Table:  o[0],
+				Id:     o[1],
+				Parent: o[2],
+				Data:   o[3],
+			})
+
+			if count == 100 {
+				err = r.doInsert(originDatas)
+				if err != nil {
+					return err
+				}
+
+				originDatas = map[string][]BackupOrigin{}
+			}
+		}
+
+		err = r.doInsert(originDatas)
+		if err != nil {
+			return err
+		}
+	*/
 	return nil
 }
 
@@ -215,4 +258,23 @@ func (r *Recover) doDelete(allDeleteIDs [][]string) error {
 	}
 
 	return nil
+}
+
+func (r *Recover) Close() {
+
+	if r.db != nil {
+		r.db.Close()
+	}
+
+	if r.es != nil {
+		r.es.Stop()
+	}
+
+	if r.oFile != nil {
+		r.oFile.Close()
+	}
+
+	if r.uFile != nil {
+		r.uFile.Close()
+	}
 }

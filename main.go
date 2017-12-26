@@ -1,63 +1,51 @@
 package main
 
 import (
-	"fmt"
-	"time"
+	"log"
+	"os"
+	"strings"
 
 	"github.com/meepshop/go-db-migration/pkg/dbMigration"
 	"github.com/meepshop/go-db-migration/pkg/recover"
 )
 
+// go run main.go --query="select * from users" | ./testPlugin.js | go run main.go --consumer
+// go run main.go --recover=20171222085205
+
 func main() {
 
-	var ans string
+	if len(os.Args) < 2 {
+		log.Println("no illegal action")
+	}
 
-	for {
-		if ans = qIndex(); ans == "A" || ans == "B" {
-			break
+	params := strings.Split(os.Args[1], "=")
+	switch params[0] {
+	case "--query":
+
+		// 確認是SELECT開頭之Query
+		if index := strings.Index(params[1], "SELECT"); index != 0 {
+			log.Println("Query format error")
+		} else {
+			dbMigration.QueryDataAndOutput(params[1])
 		}
+
+	case "--recover":
+
+		rc, err := recover.NewRecover(params[1])
+		if err == nil {
+			rc.ProcRecover()
+		}
+		rc.Close()
+
+	case "--consumer":
+
+		mgt, err := dbMigration.NewMigration()
+		if err == nil {
+			mgt.ProcDbBigration()
+		}
+		mgt.Close()
+
+	default:
+		log.Println("no illegal action")
 	}
-
-	switch ans {
-	case "A":
-		qDbMigration()
-	case "B":
-		qRecover()
-	}
-}
-
-func qIndex() string {
-	var input string
-	fmt.Print("A. DB-Migration\nB. Recover\n[A/B]:")
-	fmt.Scanln(&input)
-	return input
-}
-
-func qDbMigration() string {
-	var input string
-	fmt.Print("Plugin Path:")
-	fmt.Scanln(&input)
-
-	localLocation, _ := time.LoadLocation("UTC")
-	execTime := time.Now().In(localLocation).Format("20060102150405")
-	fmt.Print("本次備份時間:" + execTime + "\n")
-
-	mgt := dbMigration.NewMigration(input, execTime)
-	mgt.ProcDbBigration()
-
-	return "qDbMigration"
-}
-
-func qRecover() string {
-	var input string
-	fmt.Print("請輸入備份時間:")
-	fmt.Scanln(&input)
-
-	rc := recover.NewRecover(input)
-	err := rc.ProcRecover()
-	if err != nil {
-		fmt.Printf("%+v", err)
-	}
-
-	return input
 }

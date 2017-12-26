@@ -1,0 +1,35 @@
+#!/usr/bin/env node
+
+var parser = require('JSONStream').parse();
+parser.on('data', function(obj) {
+	results = migration(obj)
+	console.log(JSON.stringify(results))
+});
+
+var migration = function(obj){
+
+	var results = [];
+
+	// UPSERT
+	var result = {}
+	obj.updatedAt = "2017-12-25T00:00:00.000000+00:00"
+	result.table = "activitycouponcode"
+	result.action = "UPSERT"
+	result.id = obj.id
+	result.parent = ""
+	result.data = JSON.stringify(obj)
+	results.push(result)
+
+	// DELETE
+	var result = {}
+	result.table = "activitycouponcode"
+	result.action = "DELETE"
+	result.id = obj.id
+	result.parent = ""
+	result.data = ""
+	results.push(result)
+
+	return results
+}
+
+process.stdin.pipe(parser)

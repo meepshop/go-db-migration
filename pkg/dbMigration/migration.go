@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -19,21 +18,49 @@ import (
 	elastic "gopkg.in/olivere/elastic.v5"
 )
 
+func QueryDataAndOutput(query string) error {
+
+	pg, err := database.NewPGConn()
+	if err != nil {
+		return err
+	}
+	defer pg.Close()
+
+	rows, err := pg.Query(query)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id, data string
+		err := rows.Scan(&id, &data)
+		if err != nil {
+			log.Printf("Db Scan error ID: %s. %q\n", id, err)
+			return err
+		}
+
+		fmt.Println(data)
+	}
+
+	return nil
+}
+
 type Migration struct {
-	plugin string
-	db     *sql.DB
-	es     *elastic.Client
-	oFile  *os.File
-	uFile  *os.File
+	db       *sql.DB
+	es       *elastic.Client
+	oFile    *os.File
+	uFile    *os.File
+	execTime int64
 }
 
 type MigrationData struct {
-	Table     string
-	Action    string
-	Id        string
-	Data      string
-	Parent    string
-	UpdatedAt string
+	Table  string
+	Action string
+	Id     string
+	Data   string
+	Parent string
 }
 
 type OriginData struct {
@@ -42,58 +69,64 @@ type OriginData struct {
 	Parent string
 }
 
-func NewMigration(plugin string, execTime string) Migration {
+func NewMigration() (Migration, error) {
+
+	m := Migration{}
+
+	localLocation, _ := time.LoadLocation("UTC")
+	execTime := time.Now().In(localLocation)
+	m.execTime = execTime.UnixNano()
 
 	pg, err := database.NewPGConn()
 	if err != nil {
-		os.Exit(1)
+		return m, err
 	}
+	m.db = pg
 
 	es, err := database.NewESConn()
 	if err != nil {
-		os.Exit(1)
+		return m, err
 	}
+	m.es = es
 
-	originFile, err := os.Create("backup/" + execTime + "_originData")
+	timeString := execTime.Format("20060102150405")
+	log.Println(timeString)
+	originFile, err := os.Create("backup/" + timeString + "_originData")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("%+v", err)
+		return m, err
 	}
+	m.oFile = originFile
 
-	upsertFile, err := os.Create("backup/" + execTime + "_upsertID")
+	upsertFile, err := os.Create("backup/" + timeString + "_upsertID")
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("%+v", err)
+		return m, err
 	}
+	m.uFile = upsertFile
 
-	return Migration{plugin, pg, es, originFile, upsertFile}
+	return m, nil
 }
 
-func (m *Migration) ProcDbBigration() {
+func (m *Migration) ProcDbBigration() error {
 
-	defer m.oFile.Close()
-	defer m.uFile.Close()
-
-	// 從Plugin取得要撈取的query
-	query := m.getQuery()
-	rows, err := m.db.Query(query)
-	if err != nil {
-		log.Fatal(err)
+	scanner := bufio.NewScanner(os.Stdin)
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, "reading standard input:", err)
 	}
-	defer rows.Close()
+
+	fmt.Println(scanner.Text())
+	return nil
 
 	count := 0
 	batchBuffer := map[string][]MigrationData{}
-	for rows.Next() {
-		var id, data string
-		err := rows.Scan(&id, &data)
-		if err != nil {
-			log.Printf("Db Scan error ID: %s. %q\n", id, err)
-			return
-		}
+	for scanner.Scan() {
 
-		// 從Plugin取得轉換後的資料
-		mDatas, err := m.getMigrationResult(id, data)
+		var mDatas []MigrationData
+		err := json.Unmarshal(scanner.Bytes(), &mDatas)
 		if err != nil {
-			return
+			log.Printf("Exec migration unmarshal error. Data: %s.\n", scanner.Text())
+			return err
 		}
 
 		for _, mData := range mDatas {
@@ -105,7 +138,7 @@ func (m *Migration) ProcDbBigration() {
 		if count >= 100 {
 			err = m.dataUpdateAndBackup(batchBuffer)
 			if err != nil {
-				return
+				return err
 			}
 
 			count = 0
@@ -114,64 +147,17 @@ func (m *Migration) ProcDbBigration() {
 	}
 
 	if len(batchBuffer) > 0 {
-		err = m.dataUpdateAndBackup(batchBuffer)
-		if err != nil {
-			return
+		if err := m.dataUpdateAndBackup(batchBuffer); err != nil {
+			return err
 		}
 	}
-}
 
-func (m *Migration) getQuery() string {
-
-	stdout, err := exec.Command(m.plugin, "-query").Output()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	query := string(stdout)
-
-	// 確認是SELECT開頭之Query
-	if index := strings.Index(query, "SELECT"); index != 0 {
-		log.Fatal("plugin's stdout not query")
-	}
-
-	return query
-}
-
-func (m *Migration) getMigrationResult(id string, originData string) ([]MigrationData, error) {
-
-	stdout, err := exec.Command(m.plugin, "-migration", strings.Replace(originData, `"`, `\"`, -1)).Output()
-	if err != nil {
-		log.Printf("Exec migration error ID: %s. %q\n", id, err)
-		return []MigrationData{}, err
-	}
-
-	result := string(stdout)
-	if result == "error" {
-		log.Printf("Exec migration error ID: %s.\n", id)
-		return []MigrationData{}, err
-	}
-
-	var mDatas []MigrationData
-	err = json.Unmarshal([]byte(result), &mDatas)
-	if err != nil {
-		log.Printf("Exec migration unmarshal error ID: %s.\n", id)
-		return []MigrationData{}, err
-	}
-
-	return mDatas, nil
+	return nil
 }
 
 func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) error {
 
 	ctx := context.Background()
-
-	tx, err := m.db.Begin()
-	if err != nil {
-		log.Fatalf("Pg tx Begin err: %+v", err)
-	}
-
-	defer tx.Rollback()
 
 	for table, mDatas := range batchBuffer {
 
@@ -193,14 +179,8 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 			if mData.Action == "DELETE" {
 				bulk.Add(elastic.NewBulkDeleteRequest().Id(mData.Id))
 			} else if mData.Action == "UPSERT" {
-				updateAt, err := time.Parse(time.RFC3339, mData.UpdatedAt)
-				if err != nil {
-					log.Printf("convert time err: %+v", err)
-					return err
-				}
-
 				values = append(values, fmt.Sprintf("('%s', '%s')", mData.Id, mData.Data))
-				bulk.Add(elastic.NewBulkIndexRequest().Id(mData.Id).VersionType("external").Version(updateAt.UnixNano()).Parent(mData.Parent).Doc(mData.Data))
+				bulk.Add(elastic.NewBulkIndexRequest().Id(mData.Id).VersionType("external").Version(m.execTime).Parent(mData.Parent).Doc(mData.Data))
 			}
 		}
 
@@ -228,9 +208,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 
 		// PG DELETE
 		delSql := fmt.Sprintf("DELETE FROM %s WHERE id IN ('%s')", table, strings.Join(changeIds, "','"))
-		stmt, err := tx.Prepare(delSql)
-		_, err = stmt.Exec()
-		if err != nil {
+		if _, err := m.db.Exec(delSql); err != nil {
 			log.Printf("PG exec error: %+v", err)
 			return err
 		}
@@ -239,14 +217,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 		if len(values) > 0 {
 			// upsSql := fmt.Sprintf("INSERT INTO %s (id, data) VALUES %s ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", table, strings.Join(values, ","))
 			upsSql := fmt.Sprintf("INSERT INTO %s (id, data) VALUES %s", table, strings.Join(values, ","))
-			stmt, err := tx.Prepare(upsSql)
-			if err != nil {
-				log.Printf("PG tx.Prepare error: %+v", err)
-				return err
-			}
-
-			_, err = stmt.Exec()
-			if err != nil {
+			if _, err := m.db.Exec(upsSql); err != nil {
 				log.Printf("PG exec error: %+v", err)
 				return err
 			}
@@ -260,20 +231,11 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 		}
 		if res.Errors {
 			for _, item := range res.Failed() {
-				if item.Error.Type == "version_conflict_engine_exception" {
-					// continue
-				}
 				log.Printf("type: %s, Id: %s", item.Type, item.Id)
 				log.Printf("reason type: %s, reason: %s", item.Error.Type, item.Error.Reason)
 				return errors.New("Bulk error")
 			}
 		}
-	}
-
-	err = tx.Commit()
-	if err != nil {
-		log.Printf("PG commit error: %+v", err)
-		return err
 	}
 
 	return nil
@@ -300,4 +262,23 @@ func (m *Migration) writeToBackupFile(table string, oDatas []OriginData, changeI
 	}
 
 	return nil
+}
+
+func (m *Migration) Close() {
+
+	if m.db != nil {
+		m.db.Close()
+	}
+
+	if m.es != nil {
+		m.es.Stop()
+	}
+
+	if m.oFile != nil {
+		m.oFile.Close()
+	}
+
+	if m.uFile != nil {
+		m.uFile.Close()
+	}
 }
