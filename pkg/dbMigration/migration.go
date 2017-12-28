@@ -115,9 +115,6 @@ func (m *Migration) ProcDbBigration() error {
 		fmt.Fprintln(os.Stderr, "reading standard input:", err)
 	}
 
-	fmt.Println(scanner.Text())
-	return nil
-
 	count := 0
 	batchBuffer := map[string][]MigrationData{}
 	for scanner.Scan() {
