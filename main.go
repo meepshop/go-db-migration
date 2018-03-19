@@ -23,10 +23,10 @@ func main() {
 	case "--query":
 
 		// 確認是SELECT開頭之Query
-		if index := strings.Index(params[1], "SELECT"); index != 0 {
+		if index := strings.Index(os.Args[1][8:], "SELECT"); index != 0 {
 			log.Println("Query format error")
 		} else {
-			dbMigration.QueryDataAndOutput(params[1])
+			dbMigration.QueryDataAndOutput(os.Args[1][8:])
 		}
 
 	case "--recover":
