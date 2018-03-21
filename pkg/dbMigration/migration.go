@@ -176,7 +176,9 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 			if mData.Action == "DELETE" {
 				bulk.Add(elastic.NewBulkDeleteRequest().Id(mData.Id))
 			} else if mData.Action == "UPSERT" {
-				values = append(values, fmt.Sprintf("('%s', '%s')", mData.Id, mData.Data))
+				// escape '
+				ecmData := strings.Replace(mData.Data, "'", "''", -1)
+				values = append(values, fmt.Sprintf("('%s', '%s')", mData.Id, ecmData))
 				bulk.Add(elastic.NewBulkIndexRequest().Id(mData.Id).VersionType("external").Version(m.execTime).Parent(mData.Parent).Doc(mData.Data))
 			}
 		}
@@ -206,7 +208,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 		// PG DELETE
 		delSql := fmt.Sprintf("DELETE FROM %s WHERE id IN ('%s')", table, strings.Join(changeIds, "','"))
 		if _, err := m.db.Exec(delSql); err != nil {
-			log.Printf("PG exec error: %+v", err)
+			log.Printf("PG delete error: %+v", err)
 			return err
 		}
 
@@ -215,7 +217,7 @@ func (m *Migration) dataUpdateAndBackup(batchBuffer map[string][]MigrationData) 
 			// upsSql := fmt.Sprintf("INSERT INTO %s (id, data) VALUES %s ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", table, strings.Join(values, ","))
 			upsSql := fmt.Sprintf("INSERT INTO %s (id, data) VALUES %s", table, strings.Join(values, ","))
 			if _, err := m.db.Exec(upsSql); err != nil {
-				log.Printf("PG exec error: %+v", err)
+				log.Printf("PG insert error: %+v", err)
 				return err
 			}
 		}

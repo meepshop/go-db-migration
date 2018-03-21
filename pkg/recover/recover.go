@@ -183,7 +183,9 @@ func (r *Recover) doInsert(originDatas map[string][]BackupOrigin) error {
 		bulk := r.es.Bulk().Index(os.Getenv("ELASTIC_DB")).Type(esTable)
 
 		for _, oData := range oDatas {
-			values = append(values, fmt.Sprintf("('%s', '%s')", oData.Id, oData.Data))
+			// escape '
+			ecoData := strings.Replace(oData.Data, "'", "''", -1)
+			values = append(values, fmt.Sprintf("('%s', '%s')", oData.Id, ecoData))
 			bulk.Add(elastic.NewBulkIndexRequest().Id(oData.Id).VersionType("external").Version(r.curTimeNano).Parent(oData.Parent).Doc(oData.Data))
 		}
 
